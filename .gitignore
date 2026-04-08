@@ -6,6 +6,7 @@ x86/
 [Aa][Rr][Mm]/
 [Bb]in/
 [Oo]bj/
+[Rr]ender/
 
 # Visual Studio files
 .vs/
@@ -18,7 +19,6 @@ x86/
 *.vcxproj
 
 # Compiled binaries
-*.exe
 *.dll
 *.lib
 *.pdb
@@ -39,3 +39,6 @@ x86/
 *.cache
 *.db
 *.opendb
+*.mp4
+*.svg
+*.bmp
