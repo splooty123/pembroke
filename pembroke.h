@@ -13,7 +13,7 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
-#endif
+#endif 
 
 typedef struct {
     unsigned char r, g, b;
@@ -24,6 +24,18 @@ typedef void (*pixel_shader)(
     color* rgb,
     void* userdata
 );
+
+typedef enum {
+    ROTATE,
+	SCALE,
+	TRANSLATE_X,
+	TRANSLATE_Y
+} transform_type;
+
+typedef struct {
+	transform_type type;
+    float value;
+} transformation;
 
 extern int VIDEO_WIDTH;
 extern int VIDEO_HEIGHT;
@@ -36,8 +48,11 @@ int VIDEO_WIDTH = 640;
 int VIDEO_HEIGHT = 480;
 int VIDEO_FPS = 60;
 unsigned char** VIDEO_FRAME = NULL;
-
 static int FRAME_COUNT = 0;
+static int TRANSFORMATION_INDEX = 0;
+static int TRANSFORMATION_STACK_SIZE = 1;
+static transformation* TRANSFORMATION_STACK = (transformation*)malloc(sizeof(transformation) * TRANSFORMATION_STACK_SIZE);
+
 
 // ------------------------------------------------------------
 // Make directory
@@ -178,7 +193,7 @@ static void clear_frame(unsigned char alpha) {
 // Prints progress on video render
 // ------------------------------------------------------------
 static void progress(int video_frames) {
-    printf("\x1b[HFrames: %d / %d\nTime: %.2fsec / %dsec", FRAME_COUNT, video_frames, (float)FRAME_COUNT / (float)VIDEO_FPS, video_frames / VIDEO_FPS);
+    printf("\x1b[HFrames: %d / %d\nTime: %.2fsec / %.2fsec", FRAME_COUNT, video_frames, (float)FRAME_COUNT / (float)VIDEO_FPS, (float)video_frames / (float)VIDEO_FPS);
 }
 
 // ------------------------------------------------------------
@@ -187,12 +202,9 @@ static void progress(int video_frames) {
 static void foreach_pixel(pixel_shader fn, void* userdata) {
     for (int y = 0; y < VIDEO_HEIGHT; y++) {
         for (int x = 0; x < VIDEO_WIDTH; x++) {
-
             int idx = x * 3;
             color rgb;
-
             fn(x, y, &rgb, userdata);
-
             set_pixel(x, y, rgb);
         }
     }
@@ -204,7 +216,7 @@ static void foreach_pixel(pixel_shader fn, void* userdata) {
 static void fill_circle(int cx, int cy, int radius, color c) {
     int r2 = radius * radius;
 
-    for (int dy = -radius + 1; dy < radius; dy++) {
+    for (int dy = -radius + 1; dy <= radius; dy++) {
         int y = cy + dy;
         if (y < 0 || y >= VIDEO_HEIGHT)
             continue;
@@ -223,12 +235,176 @@ static void fill_circle(int cx, int cy, int radius, color c) {
 }
 
 // ------------------------------------------------------------
+// Draw a line
+// ------------------------------------------------------------
+static void draw_line(int x0, int y0, int x1, int y1, color c) {
+    int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    while (1) {
+        set_pixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+// ------------------------------------------------------------
+// Draw outlined polygon
+// ------------------------------------------------------------
+static void draw_polygon(int* x, int* y, int amt, color c) {
+    for (int i = 1; i < amt; i++) {
+        draw_line(x[i - 1], y[i - 1], x[i], y[i], c);
+    }
+}
+
+// ------------------------------------------------------------
+// Draw filled triangle
+// ------------------------------------------------------------
+static void fill_tri(int* x, int* y, color c) {
+    int x0 = x[0], y0 = y[0];
+    int x1 = x[1], y1 = y[1];
+    int x2 = x[2], y2 = y[2];
+
+    int miny = y0;
+    if (y1 < miny) miny = y1;
+    if (y2 < miny) miny = y2;
+
+    int maxy = y0;
+    if (y1 > maxy) maxy = y1;
+    if (y2 > maxy) maxy = y2;
+
+    if (miny < 0) miny = 0;
+    if (maxy >= VIDEO_HEIGHT) maxy = VIDEO_HEIGHT - 1;
+
+    if (miny > maxy) return;
+
+    for (int py = miny; py <= maxy; py++) {
+        float xs[3]; int xc = 0;
+
+        if ((py >= y0 && py < y1) || (py >= y1 && py < y0)) {
+            if (y1 != y0) xs[xc++] = x0 + (py - y0) * (float)(x1 - x0) / (float)(y1 - y0);
+        }
+        if ((py >= y1 && py < y2) || (py >= y2 && py < y1)) {
+            if (y2 != y1) xs[xc++] = x1 + (py - y1) * (float)(x2 - x1) / (float)(y2 - y1);
+        }
+        if ((py >= y2 && py < y0) || (py >= y0 && py < y2)) {
+            if (y0 != y2) xs[xc++] = x2 + (py - y2) * (float)(x0 - x2) / (float)(y0 - y2);
+        }
+
+        if (xc < 2) continue;
+
+        if (xc == 2) {
+            if (xs[0] > xs[1]) { float t = xs[0]; xs[0] = xs[1]; xs[1] = t; }
+        } else {
+            if (xs[0] > xs[1]) { float t = xs[0]; xs[0] = xs[1]; xs[1] = t; }
+            if (xs[1] > xs[2]) { float t = xs[1]; xs[1] = xs[2]; xs[2] = t; }
+            if (xs[0] > xs[1]) { float t = xs[0]; xs[0] = xs[1]; xs[1] = t; }
+        }
+
+        for (int i = 0; i + 1 < xc; i += 2) {
+            int xstart = (int)ceilf(xs[i]);
+            int xend   = (int)floorf(xs[i+1]);
+            if (xend < 0 || xstart >= VIDEO_WIDTH) continue;
+            if (xstart < 0) xstart = 0;
+            if (xend >= VIDEO_WIDTH) xend = VIDEO_WIDTH - 1;
+            for (int px = xstart; px <= xend; px++) set_pixel(px, py, c);
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Draw filled rectangle
+// ------------------------------------------------------------
+static void fill_polygon(int* x, int* y, int amt, color c) {
+    int minx = 0;
+    int maxx = 0;
+    int miny = 0;
+    int maxy = 0;
+    for (int i = 0; i < amt; i++) {
+        minx = min(minx, x[i]);
+        maxx = max(maxx, x[i]);
+        miny = min(miny, y[i]);
+        maxy = max(maxy, y[i]);
+    }
+    for (int i = miny; i <= maxy; i++) {
+        for (int j = minx; j <= maxx; j++) {
+            int crossings = 0;
+            for (int k = 0; k < amt; k++) {
+                int k1 = (k + 1) % amt;
+                if ((y[k] > i) != (y[k1] > i)) {
+                    float atX = (float)(x[k1] - x[k]) * (float)(i - y[k]) / (float)(y[k1] - y[k]) + x[k];
+                    if (atX > j) crossings++;
+                }
+            }
+            if (crossings % 2 == 1) {
+                set_pixel(j, i, c);
+            }
+		}
+    }
+}   
+
+// ------------------------------------------------------------
 // Draw filled rectangle
 // ------------------------------------------------------------
 static void fill_rect(int cx, int cy, int w, int h, color c) {
     for (int i = 0; i < h; i++) {
         for (int j = 0; j < w; j++) {
             set_pixel(j + cx, i + cy, c);
+        }
+    }
+}
+
+// ------------------------------------------------------------
+// Push a tranformation onto the transformation stack
+// ------------------------------------------------------------
+static void push_transformation(transform_type type, float value) {
+	TRANSFORMATION_STACK[TRANSFORMATION_INDEX++] = (transformation){ type, value };
+    if (TRANSFORMATION_INDEX >= TRANSFORMATION_STACK_SIZE) {
+        TRANSFORMATION_STACK = (transformation*)realloc(sizeof(transformation) * (TRANSFORMATION_SIZE *= 2));
+    }
+}
+
+// ------------------------------------------------------------
+// Pop a tranformation off the transformation stack
+// ------------------------------------------------------------
+static void push_transformation(transform_type type, float value) {
+    TRANSFORMATION_INDEX--;
+    if (TRANSFORMATION_INDEX < TRANSFORMATION_STACK_SIZE / 2) {
+        TRANSFORMATION_STACK = (transformation*)realloc(sizeof(transformation) * (TRANSFORMATION_SIZE /= 2));
+    }
+}
+
+// ------------------------------------------------------------
+// Pop a tranformation off the transformation stack
+// ------------------------------------------------------------
+static float* transform_point(float x, float y) {
+	ret = (float*)malloc(sizeof(float) * 2);
+    for (int i = TRANSFORMATION_INDEX; i > 0; i--) {
+        switch (TRANSFORMATION_STACK[i - 1].type) {
+            case ROTATE: {
+                float angle = TRANSFORMATION_STACK[i - 1].value;
+                float cos_a = cosf(angle);
+                float sin_a = sinf(angle);
+                float tx = ret[0] * cos_a - ret[1] * sin_a;
+                float ty = ret[0] * sin_a + ret[1] * cos_a;
+                ret[0] = tx;
+                ret[1] = ty;
+			} break;
+            case SCALE: {
+                float s = TRANSFORMATION_STACK[i - 1].value;
+                ret[0] *= s;
+                ret[1] *= s;
+            } break;
+            case TRANSLATE_X: {
+                float tx = TRANSFORMATION_STACK[i - 1].value;
+                ret[0] += tx;
+            } break;
+			case TRANSLATE_Y: {
+                float ty = TRANSFORMATION_STACK[i - 1].value;
+                ret[1] += ty;
+			} break;
         }
     }
 }
@@ -621,6 +797,7 @@ void video_end(void) {
         free(VIDEO_FRAME[i]);
     }
     free(VIDEO_FRAME);
+    free(TRANSFORMATION_STACK)
 
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
