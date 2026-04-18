@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -39,17 +40,17 @@ typedef struct {
     int w, h;
 } image;
 
-typedef struct CacheNode {
+typedef struct cache_node {
     char* key;
     image img;
-    struct CacheNode* prev;
-    struct CacheNode* next;
-} CacheNode;
+    struct cache_node* prev;
+    struct cache_node* next;
+} cache_node;
 
 typedef struct {
     char* key;
-    CacheNode* node;
-} HashEntry;
+    cache_node* node;
+} hash_entry;
 
 typedef struct {
     unsigned char r, g, b;
@@ -60,11 +61,6 @@ typedef void (*pixel_shader)(
     color* rgb,
     void* userdata
 );
-
-typedef struct {
-    int index;
-    color* data;
-} FrameJob;
 
 extern int VIDEO_WIDTH;
 extern int VIDEO_HEIGHT;
@@ -80,9 +76,9 @@ extern int MATRIX_STACK_SIZE;
 extern clock_t START_TIME;
 extern clock_t ROLLING_TIME[128];
 extern clock_t PREV_TIME;
-extern HashEntry TABLE[TABLE_SIZE];
-extern CacheNode* HEAD;
-extern CacheNode* TAIL;
+extern hash_entry TABLE[TABLE_SIZE];
+extern cache_node* HEAD;
+extern cache_node* TAIL;
 extern int CACHE_SIZE;
 extern FILE* FFMPEG_PIPE;
 
@@ -103,9 +99,9 @@ int MATRIX_STACK_SIZE = 0;
 clock_t START_TIME = 0;
 clock_t ROLLING_TIME[128] = { 0 };
 clock_t PREV_TIME = 0;
-HashEntry TABLE[TABLE_SIZE];
-CacheNode* HEAD = NULL;
-CacheNode* TAIL = NULL;
+hash_entry TABLE[TABLE_SIZE];
+cache_node* HEAD = NULL;
+cache_node* TAIL = NULL;
 int CACHE_SIZE = 0;
 FILE* FFMPEG_PIPE = NULL;
 
@@ -128,7 +124,7 @@ static uint64_t hash_str(const char* s) {
 // ------------------------------------------------------------
 // Hashtable lookup
 // ------------------------------------------------------------
-static CacheNode* cache_get_node(const char* key) {
+static cache_node* cache_get_node(const char* key) {
     uint64_t h = hash_str(key);
     int idx = h & (TABLE_SIZE - 1);
 
@@ -144,7 +140,7 @@ static CacheNode* cache_get_node(const char* key) {
 // ------------------------------------------------------------
 // Hashtable insertion
 // ------------------------------------------------------------
-static void hash_insert(CacheNode* node) {
+static void hash_insert(cache_node* node) {
     uint64_t h = hash_str(node->key);
     int idx = h & (TABLE_SIZE - 1);
 
@@ -176,7 +172,7 @@ static void hash_remove(const char* key) {
 // ------------------------------------------------------------
 // Hashtable helpers
 // ------------------------------------------------------------
-static void move_to_front(CacheNode* node) {
+static void move_to_front(cache_node* node) {
     if (node == HEAD) return;
 
     if (node->prev) node->prev->next = node->next;
@@ -193,7 +189,7 @@ static void move_to_front(CacheNode* node) {
     if (!TAIL) TAIL = node;
 }
 
-static void insert_front(CacheNode* node) {
+static void insert_front(cache_node* node) {
     node->prev = NULL;
     node->next = HEAD;
 
@@ -203,8 +199,8 @@ static void insert_front(CacheNode* node) {
     if (!TAIL) TAIL = node;
 }
 
-static CacheNode* evict_lru() {
-    CacheNode* node = TAIL;
+static cache_node* evict_lru() {
+    cache_node* node = TAIL;
     if (!node) return NULL;
 
     if (node->prev)
@@ -220,7 +216,7 @@ static CacheNode* evict_lru() {
 // Return hashtable image pointer
 // ------------------------------------------------------------
 static image* latex_cache_get(const char* key) {
-    CacheNode* node = cache_get_node(key);
+    cache_node* node = cache_get_node(key);
     if (!node) return NULL;
 
     move_to_front(node);
@@ -231,7 +227,7 @@ static image* latex_cache_get(const char* key) {
 // Adds key image pair to hashtable
 // ------------------------------------------------------------
 static void latex_cache_put(const char* key, image img) {
-    CacheNode* node = malloc(sizeof(CacheNode));
+    cache_node* node = malloc(sizeof(cache_node));
     node->key = strdup(key);
     node->img = img;
 
@@ -241,7 +237,7 @@ static void latex_cache_put(const char* key, image img) {
     CACHE_SIZE++;
 
     if (CACHE_SIZE > CACHE_CAPACITY) {
-        CacheNode* old = evict_lru();
+        cache_node* old = evict_lru();
         hash_remove(old->key);
 
         free(old->img.pixels);
@@ -458,12 +454,11 @@ static void write_le32(unsigned char* dst, unsigned int v) {
 // ------------------------------------------------------------
 // Initialize video system
 // ------------------------------------------------------------
-static void video_init(int width, int height, int fps) {
+static void video_init(int width, int height, int fps, bool speedy) {
     VIDEO_WIDTH = width;
     VIDEO_HEIGHT = height;
     VIDEO_FPS = fps;
 
-    make_dir("video");
     FRAME_COUNT = 0;
 
     MATRIX_STACK_SIZE = 8;
@@ -481,15 +476,19 @@ static void video_init(int width, int height, int fps) {
     START_TIME = clock();
     PREV_TIME = START_TIME;
 
+    const char* preset = speedy ? "ultrafast" : "slow";
+    int crf = speedy ? 30 : 18;
+
     char cmd[512];
     snprintf(cmd, sizeof(cmd),
-        "ffmpeg -y -f rawvideo -pix_fmt rgb24 "
+        "ffmpeg -y -loglevel error -f rawvideo -pix_fmt rgb24 "
         "-s %dx%d -r %d -i - "
-        "-c:v libx264 -preset fast -crf 18 output.mp4",
-        width, height, fps
+        "-c:v libx264 -preset %s -crf %d render.mp4",
+        width, height, fps, preset, crf
     );
 
     FFMPEG_PIPE = popen(cmd, "w");
+    printf("\033[2J\033[H\033[3J");
 }
 
 // ------------------------------------------------------------
@@ -499,9 +498,9 @@ static void set_pixel(int x, int y, color c) {
     if (x < 0 || x >= VIDEO_WIDTH)  return;
     if (y < 0 || y >= VIDEO_HEIGHT) return;
     int idx = x * 3;
-    VIDEO_FRAME[y][idx + 0] = c.b;
+    VIDEO_FRAME[y][idx + 2] = c.b;
     VIDEO_FRAME[y][idx + 1] = c.g;
-    VIDEO_FRAME[y][idx + 2] = c.r;
+    VIDEO_FRAME[y][idx + 0] = c.r;
 }
 
 // ------------------------------------------------------------
@@ -546,23 +545,62 @@ static void fill_frame(color c) {
 // ------------------------------------------------------------
 // Prints progress on video render
 // ------------------------------------------------------------
-static void progress(int video_frames) {
-    clock_t average_time = 0;
-    for (int i = 0; i < 128; i++) {
-        average_time += ROLLING_TIME[i];
+static void progress(float video_seconds) {
+    static const char* spinny[] ={ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+    printf("\x1b[?25l\033[H");
+    printf("\r%s %.3fsec / %.3fsec\n", spinny[FRAME_COUNT % 8], (float)FRAME_COUNT / (float)VIDEO_FPS, video_seconds);
+    printf("\x1b[?25h");
+    fflush(stdout);
+}
+
+// ------------------------------------------------------------
+// Console stuff
+// ------------------------------------------------------------
+#define FG(r,g,b) "\x1b[38;2;" #r ";" #g ";" #b "m"
+
+static void set_fg(int r, int g, int b) {
+    printf("\x1b[38;2;%d;%d;%dm", r, g, b);
+}
+
+static void set_bg(int r, int g, int b) {
+    printf("\x1b[48;2;%d;%d;%dm", r, g, b);
+}
+
+// ------------------------------------------------------------
+// Previews the current frame (ignore the artifacts)
+// ------------------------------------------------------------
+static void preview(int scale) {
+    int w = VIDEO_WIDTH / scale;
+    int h = VIDEO_HEIGHT / scale;
+    printf("\x1b[?25l");
+    for (int y = 0; y < h; y += 2) {
+        for (int x = 0; x < w; x++) {
+            int sx = x * scale;
+            int sy = y * scale;
+
+            unsigned char *row_top = VIDEO_FRAME[sy];
+            unsigned char *row_bot = VIDEO_FRAME[sy + scale];
+
+            int idx = sx * 3;
+
+            set_fg(
+                row_top[idx + 0],
+                row_top[idx + 1],
+                row_top[idx + 2]
+            );
+
+            set_bg(
+                row_bot[idx + 0],
+                row_bot[idx + 1],
+                row_bot[idx + 2]
+            );
+
+            printf("▀");
+        }
+        printf("\x1b[0m\n");
     }
-    average_time /= 128;
-    printf(
-        "\x1b[H"
-        "Frames: %d / %d\n"
-        "Time: %.2fsec / %.2fsec\n"
-        "Elapsed: %.2fsec\n"
-        "Time Left: %.2fsec",
-        FRAME_COUNT, video_frames,
-        (float)FRAME_COUNT / (float)VIDEO_FPS, (float)video_frames / (float)VIDEO_FPS,
-        (float)(clock() - START_TIME) / (CLOCKS_PER_SEC),
-        average_time / (float)CLOCKS_PER_SEC * (float)(video_frames - FRAME_COUNT)
-    );
+    printf("\x1b[?25h");
+    fflush(stdout);
 }
 
 // ------------------------------------------------------------
@@ -1138,10 +1176,10 @@ void blit_latex_mask(image* img, int x, int y, float target_width, float angle, 
     int max_ty = y + half_diag;
 
     #pragma omp parallel for
-    for (int ty = min_ty; ty <= max_ty; ty++) {
+    for (int ty = min_ty; ty <= max_ty + 1; ty++) {
         if (ty < 0 || ty >= VIDEO_HEIGHT) continue;
 
-        for (int tx = min_tx; tx <= max_tx; tx++) {
+        for (int tx = min_tx; tx <= max_tx + 1; tx++) {
             if (tx < 0 || tx >= VIDEO_WIDTH) continue;
 
             int dx = tx - x;
@@ -1159,7 +1197,7 @@ void blit_latex_mask(image* img, int x, int y, float target_width, float angle, 
 
                 if (src_x >= 0 && src_x < img->w && src_y >= 0 && src_y < img->h) {
                     int idx = (src_y * img->w + src_x) * 4;
-                    unsigned char intensity = img->pixels[idx]; 
+                    unsigned char intensity = img->pixels[idx + 3]; 
 
                     if (intensity > 0) {
                         set_pixel(tx, ty, (color){
@@ -1212,6 +1250,8 @@ static void save_frame() {
     for (int y = 0; y < VIDEO_HEIGHT; y++) {
         fwrite(VIDEO_FRAME[y], sizeof(color), VIDEO_WIDTH, FFMPEG_PIPE);
     }
+    ROLLING_TIME[FRAME_COUNT & 127] = clock() - PREV_TIME;
+    PREV_TIME = clock();
     FRAME_COUNT++;
 }
 
@@ -1226,7 +1266,6 @@ void video_end() {
     if (MATRIX_STACK) free(MATRIX_STACK);
     fflush(FFMPEG_PIPE);
     pclose(FFMPEG_PIPE);
-    remove_dir("video");
 }
 
 #endif

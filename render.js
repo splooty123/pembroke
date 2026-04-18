@@ -31,7 +31,6 @@ if (vbMatch) {
     vw += padW;
     vh += padH;
     newViewBox = `${vx} ${vy} ${vw} ${vh}`;
-    bgRect = `<rect x="${vx}" y="${vy}" width="${vw}" height="${vh}" fill="black" />`;
 }
 let finalAttributes = `viewBox="${newViewBox}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"`;
 const finalStyles = styles + `

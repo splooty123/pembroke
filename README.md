@@ -4,8 +4,8 @@ Pembroke is a single file C library for creating and animating math videos.
 # Dependencies
 * Node.js - for running MathJax
 * MathJax - for rendering LaTeX math formulas to SVG
-* ImageMagick - for converting SVG to BMP
-* FFmpeg (included) - for encoding BMP frames into a video
+* Librsvg - for converting SVG to BMP
+* FFmpeg (included for Windows) - for encoding BMP frames into a video
 
 # Usage
 The following is an minimal example of creating a video with Pembroke.
@@ -21,16 +21,16 @@ int main() {
 
     for (int i = 0; i < 60; i++) {
         // Clear frame with white background
-        clear_frame(255);
+        fill_frame((color){ 255, 255, 255 });
 
         // Draw LaTeX math formula at the top-left corner
-        write_latex("\\frac{dy}{dx} e^x = e^x", 0, 0, (color){0, 0, 0});
+        write_latex("\\frac{dy}{dx} e^x = e^x", 0, 0, 100, 0.0f, (color){0, 0, 0});
 
-        // Save the current frame as a BMP
+        // Pipe frame into FFmpeg
         save_frame();
     }
 
-    // Encode all frames into "render.mp4"
+    // Deinitialize video
     video_end();
 }
 ```
