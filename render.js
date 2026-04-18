@@ -7,7 +7,6 @@ const RegisterHTMLHandler = require('mathjax-full/js/handlers/html.js').Register
 const adaptor = liteAdaptor();
 RegisterHTMLHandler(adaptor);
 
-<<<<<<< HEAD
 const tex = new TeX({packages: ['base', 'ams']});
 const svg = new SVG({fontCache: 'none'});
 
@@ -17,7 +16,6 @@ const input = process.argv[2] || '';
 const node = html.convert(input, {display: true});
 
 console.log(adaptor.outerHTML(node));
-=======
 // 1. Setup MathJax
 const tex = new TeX({ packages: ['base', 'ams'] });
 const svgJax = new SVG({ fontCache: 'local' }); 
@@ -85,4 +83,3 @@ const finalSvg = `<?xml version="1.0" encoding="UTF-8"?>
 </svg>`.trim();
 
 console.log(finalSvg);
->>>>>>> b104caa (added local cache)

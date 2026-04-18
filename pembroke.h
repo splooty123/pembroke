@@ -24,16 +24,12 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
-<<<<<<< HEAD
-#endif 
-=======
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
 #define PI 3.14159265358979323846f
->>>>>>> b104caa (added local cache)
 
 typedef struct {
     unsigned char r, g, b;
@@ -67,18 +63,10 @@ float XMIN = -1.0f;
 float XMAX = 1.0f;
 float YMIN = -1.0f;
 float YMAX = 1.0f;
-<<<<<<< HEAD
-static int FRAME_COUNT = 0;
-static float* MATRIX_STACK = NULL;
-static int MATRIX_STACK_COUNT = 0;
-static int MATRIX_STACK_SIZE = 0;
-
-=======
 int FRAME_COUNT = 0;
 float* MATRIX_STACK = NULL;
 int MATRIX_STACK_COUNT = 0;
 int MATRIX_STACK_SIZE = 0;
->>>>>>> b104caa (added local cache)
 
 // ------------------------------------------------------------
 // Make directory
@@ -844,126 +832,76 @@ typedef struct {
 } image;
 
 // ------------------------------------------------------------
-// Loads a BMP as image struct
+// Loads image from file
 // ------------------------------------------------------------
-static image load_bmp(const char* filename) {
-    image img = { 0 };
+static image load_image(const char* filename) {
+    image img = {0, 0, NULL};
+    int channels;
+    const char* ext = strrchr(filename, '.');
 
-    FILE* fp = fopen(filename, "rb");
-    if (!fp) {
-        printf("Could not open %s\n", filename);
-        return img;
+    if (ext && strcmp(ext, ".svg") == 0) {
+        system("mkdir -p tmp_img");
+        char cmd[1024];
+        snprintf(cmd, sizeof(cmd), "rsvg-convert -f png -h 1080 %s -o tmp_img/conv.png", filename);
+        system(cmd);
+        
+        img.pixels = stbi_load("tmp_img/conv.png", &img.w, &img.h, &channels, 4);
+        remove("tmp_img/conv.png");
+    } else {
+        img.pixels = stbi_load(filename, &img.w, &img.h, &channels, 4);
     }
 
-    unsigned char header[54];
-    fread(header, 1, 54, fp);
-
-    int w = header[18] | (header[19] << 8) | (header[20] << 16) | (header[21] << 24);
-    int h = header[22] | (header[23] << 8) | (header[24] << 16) | (header[25] << 24);
-
-    int row_bytes = w * 3;
-    int padding = (4 - (row_bytes % 4)) % 4;
-
-    unsigned char* data = (unsigned char*)malloc(w * h * 3);
-    
-    for (int y = h - 1; y >= 0; y--) {
-        fread(data + y * row_bytes, 1, row_bytes, fp);
-        fseek(fp, padding, SEEK_CUR);
+    if (!img.pixels) {
+        fprintf(stderr, "Error: Could not load image %s\n", filename);
     }
-
-    fclose(fp);
-
-    img.w = w;
-    img.h = h;
-    img.pixels = data;
     return img;
 }
 
 // ------------------------------------------------------------
 // Blits image struct onto frame
 // ------------------------------------------------------------
-static void blit_image(image* img, float cx, float cy, float scale, float angle) {
-    float s = sinf(angle);
-    float c = cosf(angle);
+void blit_image(image* img, int x, int y, float target_width, float angle, color c) {
+    if (!img || !img->pixels || img->w == 0) return;
 
-    float inv00 = c / scale;
-    float inv01 = s / scale;
-    float inv10 = -s / scale;
-    float inv11 = c / scale;
+    float ratio = target_width / (float)img->w;
+    int sw = (int)target_width;
+    int sh = (int)(img->h * ratio);
 
-#pragma omp parallel for
-    for (int dy = 0; dy < VIDEO_HEIGHT; dy++) {
-        for (int dx = 0; dx < VIDEO_WIDTH; dx++) {
-            float x = dx - cx;
-            float y = dy - cy;
+    float rad = angle * PI / 180.0f;
+    float cos_a = cosf(rad);
+    float sin_a = sinf(rad);
 
-            float sx = inv00 * x + inv01 * y + img->w * 0.5f;
-            float sy = inv10 * x + inv11 * y + img->h * 0.5f;
+    #pragma omp parallel for
+    for (int py = 0; py < sh; py++) {
+        for (int px = 0; px < sw; px++) {
+            int src_x = (int)(px / ratio);
+            int src_y = (int)(py / ratio);
 
-            int ix = (int)sx;
-            int iy = (int)sy;
+            if (src_x >= img->w || src_y >= img->h) continue;
 
-            if (ix >= 0 && ix < img->w &&
-                iy >= 0 && iy < img->h) {
-                set_pixel(dx, dy, (color){
-                    img->pixels[(iy * img->w + ix) * 3 + 2],
-                    img->pixels[(iy * img->w + ix) * 3 + 1],
-                    img->pixels[(iy * img->w + ix) * 3 + 0]
-				});
+            int idx = (src_y * img->w + src_x) * 4;
+            unsigned char intensity = img->pixels[idx];
+            unsigned char alpha = img->pixels[idx + 3];
+
+            if (intensity > 30 || alpha > 0) {
+                int tx = px - sw / 2;
+                int ty = py - sh / 2;
+                
+                int target_x = x + (int)(tx * cos_a - ty * sin_a);
+                int target_y = y + (int)(tx * sin_a + ty * cos_a);
+
+                // Bounds check for 4K frame
+                if (target_x >= 0 && target_x < VIDEO_WIDTH && target_y >= 0 && target_y < VIDEO_HEIGHT) {
+                    set_pixel(target_x, target_y, c);
+                }
             }
         }
     }
 }
 
-
 // ------------------------------------------------------------
 // Blits latex mask image struct onto frame
 // ------------------------------------------------------------
-<<<<<<< HEAD
-static void blit_latex_mask(const image* mask, float cx, float cy, float scale, float angle, color text_color) {
-    float s = sinf(angle);
-    float c = cosf(angle);
-
-    float inv00 = c / scale;
-    float inv01 = s / scale;
-    float inv10 = -s / scale;
-    float inv11 = c / scale;
-
-    int w = mask->w;
-    int h = mask->h;
-    unsigned char* px = mask->pixels;
-
-#pragma omp parallel for
-    for (int dy = 0; dy < VIDEO_HEIGHT; dy++) {
-        for (int dx = 0; dx < VIDEO_WIDTH; dx++) {
-
-            float x = dx - cx;
-            float y = dy - cy;
-
-            float sx = inv00 * x + inv01 * y + w * 0.5f;
-            float sy = inv10 * x + inv11 * y + h * 0.5f;
-
-            int ix = (int)sx;
-            int iy = (int)sy;
-
-            if (ix >= 0 && ix < w && iy >= 0 && iy < h) {
-                int src = (iy * w + ix) * 3;
-                unsigned char cov = px[src + 2];
-                if (cov == 0) continue;
-
-                float a = cov / 255.0f;
-
-                int dst = dx * 3;
-
-                float br = VIDEO_FRAME[dy][dst + 2];
-                float bg = VIDEO_FRAME[dy][dst + 1];
-                float bb = VIDEO_FRAME[dy][dst + 0];
-
-                VIDEO_FRAME[dy][dst + 2] = (unsigned char)(br * (1.0f - a) + text_color.r * a);
-                VIDEO_FRAME[dy][dst + 1] = (unsigned char)(bg * (1.0f - a) + text_color.g * a);
-                VIDEO_FRAME[dy][dst + 0] = (unsigned char)(bb * (1.0f - a) + text_color.b * a);
-            }
-=======
 void blit_latex_mask(image* img, int x, int y, float target_width, float angle, color c) {
     if (!img || !img->pixels || img->w == 0) return;
 
@@ -999,52 +937,14 @@ void blit_latex_mask(image* img, int x, int y, float target_width, float angle, 
                 (unsigned char)((c.g * intensity) / 255),
                 (unsigned char)((c.b * intensity) / 255)
             });
->>>>>>> b104caa (added local cache)
         }
     }
 }
 
-<<<<<<< HEAD
-
-// ------------------------------------------------------------
-// Saves LaTeX as BMP
-// ------------------------------------------------------------
-static int latex_to_bmp(const char* latex, const char* bmp_path) {
-    char* text = (char*)malloc((strlen(latex) + 32) * sizeof(char));
-    snprintf(text, (strlen(latex) + 32) * sizeof(char), "node render.js \"%s\" > tmp.svg", latex);
-    system(text); free(text);
-    system("magick -density 300 tmp.svg -resize 512x -define bmp:format=bmp3 mask.bmp");
-    remove("tmp.svg");
-
-    return 0;
-}
-
-=======
->>>>>>> b104caa (added local cache)
 // ------------------------------------------------------------
 // Writes LaTeX to frame
 // ------------------------------------------------------------
 static void write_latex(const char* latex, int x, int y, float scale, float angle, color c) {
-<<<<<<< HEAD
-    size_t cmd_size = strlen(latex) + 64;
-    char* cmd = (char*)malloc(cmd_size);
-    snprintf(cmd, cmd_size, "node render.js \"%s\" > tmp.svg", latex);
-    system(cmd);
-    free(cmd);
-
-    system("magick -density 2048 tmp.svg -resize 512x -define bmp:format=bmp3 mask.bmp");
-    remove("tmp.svg");
-
-    image mask = load_bmp("mask.bmp");
-    remove("mask.bmp");
-
-    blit_latex_mask(&mask, x, y, scale, angle, c);
-
-    free(mask.pixels);
-}
-
-
-=======
     char cmd[2048];
     char cache_path[1024];
     
@@ -1061,7 +961,6 @@ static void write_latex(const char* latex, int x, int y, float scale, float angl
     if (access(cache_path, F_OK) == -1) {
         snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
         system(cmd);
-        // Render at a high base height for quality
         snprintf(cmd, sizeof(cmd), "rsvg-convert -f png -h 500 -o %s tmp.svg", cache_path);
         system(cmd);
         remove("tmp.svg");
@@ -1077,7 +976,6 @@ static void write_latex(const char* latex, int x, int y, float scale, float angl
     }
 }
 
->>>>>>> b104caa (added local cache)
 // ------------------------------------------------------------
 // Save current frame as BMP
 // ------------------------------------------------------------
@@ -1150,10 +1048,6 @@ void video_end(void) {
     system(cmd);
     remove_dir("video");
     remove_dir("latex_cache");
-<<<<<<< HEAD
-=======
-    remove_dir("latex_cache");
->>>>>>> b104caa (added local cache)
 }
 
 #endif
