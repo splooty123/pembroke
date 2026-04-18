@@ -24,7 +24,16 @@
 #include <sys/types.h>
 #include <dirent.h>
 #include <unistd.h>
+<<<<<<< HEAD
 #endif 
+=======
+#endif
+
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+
+#define PI 3.14159265358979323846f
+>>>>>>> b104caa (added local cache)
 
 typedef struct {
     unsigned char r, g, b;
@@ -58,11 +67,18 @@ float XMIN = -1.0f;
 float XMAX = 1.0f;
 float YMIN = -1.0f;
 float YMAX = 1.0f;
+<<<<<<< HEAD
 static int FRAME_COUNT = 0;
 static float* MATRIX_STACK = NULL;
 static int MATRIX_STACK_COUNT = 0;
 static int MATRIX_STACK_SIZE = 0;
 
+=======
+int FRAME_COUNT = 0;
+float* MATRIX_STACK = NULL;
+int MATRIX_STACK_COUNT = 0;
+int MATRIX_STACK_SIZE = 0;
+>>>>>>> b104caa (added local cache)
 
 // ------------------------------------------------------------
 // Make directory
@@ -903,6 +919,7 @@ static void blit_image(image* img, float cx, float cy, float scale, float angle)
 // ------------------------------------------------------------
 // Blits latex mask image struct onto frame
 // ------------------------------------------------------------
+<<<<<<< HEAD
 static void blit_latex_mask(const image* mask, float cx, float cy, float scale, float angle, color text_color) {
     float s = sinf(angle);
     float c = cosf(angle);
@@ -946,10 +963,48 @@ static void blit_latex_mask(const image* mask, float cx, float cy, float scale, 
                 VIDEO_FRAME[dy][dst + 1] = (unsigned char)(bg * (1.0f - a) + text_color.g * a);
                 VIDEO_FRAME[dy][dst + 0] = (unsigned char)(bb * (1.0f - a) + text_color.b * a);
             }
+=======
+void blit_latex_mask(image* img, int x, int y, float target_width, float angle, color c) {
+    if (!img || !img->pixels || img->w == 0) return;
+
+    float ratio = target_width / (float)img->w;
+    int sw = (int)target_width;
+    int sh = (int)(img->h * ratio);
+
+    float rad = angle * PI / 180.0f;
+    float cos_a = cosf(rad);
+    float sin_a = sinf(rad);
+
+#pragma omp parallel for
+    for (int py = 0; py < sh; py++) {
+        for (int px = 0; px < sw; px++) {
+            
+            int src_x = (int)(px / ratio);
+            int src_y = (int)(py / ratio);
+
+            if (src_x >= img->w || src_y >= img->h) continue;
+
+            
+            int idx = (src_y * img->w + src_x) * 4;
+            unsigned char intensity = img->pixels[idx]; 
+
+            int tx = px - sw / 2;
+            int ty = py - sh / 2;
+                
+            int target_x = x + (int)(tx * cos_a - ty * sin_a);
+            int target_y = y + (int)(tx * sin_a + ty * cos_a);
+
+            set_pixel(target_x, target_y, (color){
+                (unsigned char)((c.r * intensity) / 255),
+                (unsigned char)((c.g * intensity) / 255),
+                (unsigned char)((c.b * intensity) / 255)
+            });
+>>>>>>> b104caa (added local cache)
         }
     }
 }
 
+<<<<<<< HEAD
 
 // ------------------------------------------------------------
 // Saves LaTeX as BMP
@@ -964,10 +1019,13 @@ static int latex_to_bmp(const char* latex, const char* bmp_path) {
     return 0;
 }
 
+=======
+>>>>>>> b104caa (added local cache)
 // ------------------------------------------------------------
 // Writes LaTeX to frame
 // ------------------------------------------------------------
 static void write_latex(const char* latex, int x, int y, float scale, float angle, color c) {
+<<<<<<< HEAD
     size_t cmd_size = strlen(latex) + 64;
     char* cmd = (char*)malloc(cmd_size);
     snprintf(cmd, cmd_size, "node render.js \"%s\" > tmp.svg", latex);
@@ -986,6 +1044,40 @@ static void write_latex(const char* latex, int x, int y, float scale, float angl
 }
 
 
+=======
+    char cmd[2048];
+    char cache_path[1024];
+    
+    char safe_name[256];
+    strncpy(safe_name, latex, 255);
+    for(int i = 0; safe_name[i]; i++) {
+        if (safe_name[i] == '\\' || safe_name[i] == '{' || safe_name[i] == '}' || safe_name[i] == ' ') 
+            safe_name[i] = '_';
+    }
+
+    make_dir("latex_cache");
+    snprintf(cache_path, sizeof(cache_path), "latex_cache/%s.png", safe_name);
+
+    if (access(cache_path, F_OK) == -1) {
+        snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
+        system(cmd);
+        // Render at a high base height for quality
+        snprintf(cmd, sizeof(cmd), "rsvg-convert -f png -h 500 -o %s tmp.svg", cache_path);
+        system(cmd);
+        remove("tmp.svg");
+    }
+
+    int width, height, channels;
+    image img;
+    img.pixels = stbi_load(cache_path, &img.w, &img.h, &channels, 4);
+    
+    if (img.pixels) {
+        blit_latex_mask(&img, x, y, scale, angle, c);
+        stbi_image_free(img.pixels);
+    }
+}
+
+>>>>>>> b104caa (added local cache)
 // ------------------------------------------------------------
 // Save current frame as BMP
 // ------------------------------------------------------------
@@ -1057,6 +1149,11 @@ void video_end(void) {
     );
     system(cmd);
     remove_dir("video");
+    remove_dir("latex_cache");
+<<<<<<< HEAD
+=======
+    remove_dir("latex_cache");
+>>>>>>> b104caa (added local cache)
 }
 
 #endif
