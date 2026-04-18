@@ -778,9 +778,6 @@ static void set_graphing_window(float xmin, float xmax, float ymin, float ymax) 
 static inline int map_to_screen(float y) {
     float t = (y - YMIN) / (YMAX - YMIN);
     float py = (1.0f - t) * (VIDEO_HEIGHT - 1);
-
-    if (py < 0) return 0;
-    if (py >= VIDEO_HEIGHT) return VIDEO_HEIGHT - 1;
     return (int)py;
 }
 
@@ -790,30 +787,27 @@ static inline int map_to_screen(float y) {
 static void graph_rpn_struct(const RPN_Program* prog, int weight, color rgb) {
     float dx = (XMAX - XMIN) / (float)VIDEO_WIDTH;
 
-    float prev_y = rpn_eval(prog, XMIN);
-    int prev_py = map_to_screen(prev_y);
+    float prev_x_val = XMIN;
+    float prev_y_val = rpn_eval(prog, prev_x_val);
+    int prev_sx = 0;
+    int prev_sy = map_to_screen(prev_y_val);
 
     for (int px = 1; px < VIDEO_WIDTH; px++) {
-        float x = XMIN + px * dx;
-        float curr_y = rpn_eval(prog, x);
-        int curr_py = map_to_screen(curr_y);
+        float curr_x_val = XMIN + px * dx;
+        float curr_y_val = rpn_eval(prog, curr_x_val);
+        int curr_sy = map_to_screen(curr_y_val);
 
-        fill_circle(px, curr_py, weight, rgb);
-
-        if ((prev_y < 0 && curr_y > 0) ||
-            (prev_y > 0 && curr_y < 0) ||
-            abs(curr_py - prev_py) > weight * 2) {
-
-            int y0 = prev_py;
-            int y1 = curr_py;
-            if (y0 > y1) { int t = y0; y0 = y1; y1 = t; }
-
-            for (int py = y0; py <= y1; py++)
-                set_pixel(px, py, rgb);
+        if (weight <= 1) {
+            draw_line(px - 1, prev_sy, px, curr_sy, rgb);
+        } else {
+            // For thicker lines, we draw multiple offset lines to simulate stroke weight
+            for (int w = -weight / 2; w <= weight / 2; w++) {
+                draw_line(px - 1, prev_sy + w, px, curr_sy + w, rgb);
+            }
         }
 
-        prev_y = curr_y;
-        prev_py = curr_py;
+        prev_y_val = curr_y_val;
+        prev_sy = curr_sy;
     }
 }
 
@@ -860,7 +854,7 @@ static image load_image(const char* filename) {
 // ------------------------------------------------------------
 // Blits image struct onto frame
 // ------------------------------------------------------------
-void blit_image(image* img, int x, int y, float target_width, float angle, color c) {
+void blit_image(image* img, int x, int y, float target_width, float angle) {
     if (!img || !img->pixels || img->w == 0) return;
 
     float ratio = target_width / (float)img->w;
@@ -876,23 +870,22 @@ void blit_image(image* img, int x, int y, float target_width, float angle, color
         for (int px = 0; px < sw; px++) {
             int src_x = (int)(px / ratio);
             int src_y = (int)(py / ratio);
-
             if (src_x >= img->w || src_y >= img->h) continue;
 
             int idx = (src_y * img->w + src_x) * 4;
-            unsigned char intensity = img->pixels[idx];
-            unsigned char alpha = img->pixels[idx + 3];
+            unsigned char r = img->pixels[idx];
+            unsigned char g = img->pixels[idx + 1];
+            unsigned char b = img->pixels[idx + 2];
+            unsigned char a = img->pixels[idx + 3];
 
-            if (intensity > 30 || alpha > 0) {
+            if (a > 0) {
                 int tx = px - sw / 2;
                 int ty = py - sh / 2;
-                
                 int target_x = x + (int)(tx * cos_a - ty * sin_a);
                 int target_y = y + (int)(tx * sin_a + ty * cos_a);
 
-                // Bounds check for 4K frame
                 if (target_x >= 0 && target_x < VIDEO_WIDTH && target_y >= 0 && target_y < VIDEO_HEIGHT) {
-                    set_pixel(target_x, target_y, c);
+                    set_pixel(target_x, target_y, (color){r, g, b});
                 }
             }
         }

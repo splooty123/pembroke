@@ -42,4 +42,7 @@ x86/
 *.mp4
 *.svg
 *.bmp
+*.png
+*.jpg
+*.jpeg
 [Mm]ain.c
