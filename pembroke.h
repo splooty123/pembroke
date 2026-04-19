@@ -31,6 +31,25 @@
 #include "stb_image.h"
 
 #define PI 3.14159265358979323846f
+#define CACHE_CAPACITY 128
+#define TABLE_SIZE 256
+
+typedef struct {
+    unsigned char *pixels;
+    int w, h;
+} image;
+
+typedef struct CacheNode {
+    char *key;
+    image img;
+    struct CacheNode *prev;
+    struct CacheNode *next;
+} CacheNode;
+
+typedef struct {
+    char *key;
+    CacheNode *node;
+} HashEntry;
 
 typedef struct {
     unsigned char r, g, b;
@@ -56,6 +75,10 @@ extern int MATRIX_STACK_SIZE;
 extern clock_t START_TIME;
 extern clock_t ROLLING_TIME[128];
 extern clock_t PREV_TIME;
+extern HashEntry TABLE[TABLE_SIZE];
+extern CacheNode* HEAD;
+extern CacheNode* TAIL;
+extern int CACHE_SIZE;
 
 #ifdef PEMBROKE_IMPLEMENTATION
 
@@ -74,6 +97,149 @@ int MATRIX_STACK_SIZE = 0;
 clock_t START_TIME = 0;
 clock_t ROLLING_TIME[128] = { 0 };
 clock_t PREV_TIME = 0;
+HashEntry TABLE[TABLE_SIZE];
+CacheNode* HEAD = NULL;
+CacheNode* TAIL = NULL;
+int CACHE_SIZE = 0;
+
+// ------------------------------------------------------------
+// Hash function
+// ------------------------------------------------------------
+static uint64_t hash_str(const char *s) {
+    uint64_t h = 1469598103934665603ULL;
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+// ------------------------------------------------------------
+// Hashtable lookup
+// ------------------------------------------------------------
+static CacheNode* cache_get_node(const char *key) {
+    uint64_t h = hash_str(key);
+    int idx = h & (TABLE_SIZE - 1);
+
+    while (TABLE[idx].key) {
+        if (strcmp(TABLE[idx].key, key) == 0)
+            return TABLE[idx].node;
+
+        idx = (idx + 1) & (TABLE_SIZE - 1);
+    }
+    return NULL;
+}
+
+// ------------------------------------------------------------
+// Hashtable insertion
+// ------------------------------------------------------------
+static void hash_insert(CacheNode *node) {
+    uint64_t h = hash_str(node->key);
+    int idx = h & (TABLE_SIZE - 1);
+
+    while (TABLE[idx].key) {
+        idx = (idx + 1) & (TABLE_SIZE - 1);
+    }
+
+    TABLE[idx].key = node->key;
+    TABLE[idx].node = node;
+}
+
+// ------------------------------------------------------------
+// Hashtable removal
+// ------------------------------------------------------------
+static void hash_remove(const char *key) {
+    uint64_t h = hash_str(key);
+    int idx = h & (TABLE_SIZE - 1);
+
+    while (TABLE[idx].key) {
+        if (strcmp(TABLE[idx].key, key) == 0) {
+            TABLE[idx].key = NULL;
+            TABLE[idx].node = NULL;
+            return;
+        }
+        idx = (idx + 1) & (TABLE_SIZE - 1);
+    }
+}
+
+// ------------------------------------------------------------
+// Hashtable helpers
+// ------------------------------------------------------------
+static void move_to_front(CacheNode *node) {
+    if (node == HEAD) return;
+
+    if (node->prev) node->prev->next = node->next;
+    if (node->next) node->next->prev = node->prev;
+
+    if (node == TAIL) TAIL = node->prev;
+
+    node->prev = NULL;
+    node->next = HEAD;
+
+    if (HEAD) HEAD->prev = node;
+    HEAD = node;
+
+    if (!TAIL) TAIL = node;
+}
+
+static void insert_front(CacheNode *node) {
+    node->prev = NULL;
+    node->next = HEAD;
+
+    if (HEAD) HEAD->prev = node;
+    HEAD = node;
+
+    if (!TAIL) TAIL = node;
+}
+
+static CacheNode* evict_lru() {
+    CacheNode *node = TAIL;
+    if (!node) return NULL;
+
+    if (node->prev)
+        node->prev->next = NULL;
+    else
+        HEAD = NULL;
+
+    TAIL = node->prev;
+    return node;
+}
+
+// ------------------------------------------------------------
+// Return hashtable image pointer
+// ------------------------------------------------------------
+static image* latex_cache_get(const char *key) {
+    CacheNode *node = cache_get_node(key);
+    if (!node) return NULL;
+
+    move_to_front(node);
+    return &node->img;
+}
+
+// ------------------------------------------------------------
+// Adds key image pair to hashtable
+// ------------------------------------------------------------
+static void latex_cache_put(const char *key, image img) {
+    CacheNode *node = malloc(sizeof(CacheNode));
+    node->key = strdup(key);
+    node->img = img;
+
+    insert_front(node);
+    hash_insert(node);
+
+    CACHE_SIZE++;
+
+    if (CACHE_SIZE > CACHE_CAPACITY) {
+        CacheNode *old = evict_lru();
+        hash_remove(old->key);
+
+        free(old->img.pixels);
+        free(old->key);
+        free(old);
+
+        CACHE_SIZE--;
+    }
+}
 
 // ------------------------------------------------------------
 // Make directory
@@ -844,16 +1010,11 @@ static void graph_rpn(const char* rpn_src, int weight, color rgb) {
     free(prog.tokens);
 }
 
-typedef struct {
-    int w, h;
-    unsigned char* pixels;
-} image;
-
 // ------------------------------------------------------------
 // Loads image from file
 // ------------------------------------------------------------
 static image load_image(const char* filename) {
-    image img = {0, 0, NULL};
+    image img = {NULL, 0, 0};
     int channels;
     const char* ext = strrchr(filename, '.');
 
@@ -939,18 +1100,14 @@ void blit_image(image* img, int x, int y, float target_width, float angle) {
 void blit_latex_mask(image* img, int x, int y, float target_width, float angle, color c) {
     if (!img || !img->pixels || img->w == 0) return;
 
-    // 1. Calculate scaling and dimensions
     float ratio = target_width / (float)img->w;
     int sw = (int)target_width;
     int sh = (int)(img->h * ratio);
 
-    // 2. Setup rotation (Inverse: rotate by -angle to sample)
     float rad = -angle * PI / 180.0f;
     float cos_a = cosf(rad);
     float sin_a = sinf(rad);
 
-    // 3. Define the bounding box on screen
-    // Using the diagonal ensures we cover the full rotation area
     float diag = sqrtf((float)sw * sw + (float)sh * sh);
     int half_diag = (int)(diag / 2.0f) + 1;
 
@@ -1000,91 +1157,31 @@ void blit_latex_mask(image* img, int x, int y, float target_width, float angle, 
 // Writes LaTeX to frame
 // ------------------------------------------------------------
 static void write_latex(const char* latex, int x, int y, float scale, float angle, color c) {
-    char cmd[2048];
-    char cache_path[1024];
-    
-    char safe_name[256];
-    strncpy(safe_name, latex, 255);
-    for(int i = 0; safe_name[i]; i++) {
-        if (safe_name[i] == '\\' || safe_name[i] == '{' || safe_name[i] == '}' || safe_name[i] == ' ') 
-            safe_name[i] = '_';
+    image *cached = latex_cache_get(latex);
+    if (cached) {
+        blit_latex_mask(cached, x, y, scale, angle, c);
+        return;
     }
 
-    make_dir("latex_cache");
-    snprintf(cache_path, sizeof(cache_path), "latex_cache/%s.png", safe_name);
+    char cmd[512];
 
-    if (access(cache_path, F_OK) == -1) {
-        snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
-        system(cmd);
-        snprintf(cmd, sizeof(cmd), "rsvg-convert -f png -h 500 -o %s tmp.svg", cache_path);
-        system(cmd);
-        remove("tmp.svg");
-    }
+    snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
+    system(cmd);
 
-    int width, height, channels;
+    system("rsvg-convert -f png -h 500 -o tmp.png tmp.svg");
+    remove("tmp.svg");
+
     image img;
-    img.pixels = stbi_load(cache_path, &img.w, &img.h, &channels, 4);
-    
+    int channels;
+    img.pixels = stbi_load("tmp.png", &img.w, &img.h, &channels, 4);
+
     if (img.pixels) {
         blit_latex_mask(&img, x, y, scale, angle, c);
-        stbi_image_free(img.pixels);
-    }
-}
 
-// ------------------------------------------------------------
-// Save current frame as BMP
-// ------------------------------------------------------------
-static void save_frame(void) {
-    char filename[256];
-    snprintf(filename, sizeof(filename), "video/frame_%05d.bmp", FRAME_COUNT++);
-
-    FILE* fp = fopen(filename, "wb");
-    if (!fp) return;
-
-    int w = VIDEO_WIDTH;
-    int h = VIDEO_HEIGHT;
-    int channels = 3;
-
-    int row_bytes = w * channels;
-    int padding = (4 - (row_bytes % 4)) % 4;
-
-    unsigned char header[54] = {
-        'B','M',
-        0,0,0,0,
-        0,0,0,0,
-        54,0,0,0,
-        40,0,0,0,
-        0,0,0,0,
-        0,0,0,0,
-        1,0,
-        24,0,
-        0,0,0,0,
-        0,0,0,0,
-        0x13,0x0B,0,0,
-        0x13,0x0B,0,0,
-        0,0,0,0,
-        0,0,0,0
-    };
-
-    int filesize = 54 + (row_bytes + padding) * h;
-    write_le32(&header[18], w);
-    write_le32(&header[22], h);
-    write_le32(&header[2], filesize);
-
-    fwrite(header, 1, 54, fp);
-
-    unsigned char pad[3] = { 0,0,0 };
-
-    for (int y = h - 1; y >= 0; y--) {
-        unsigned char* row = VIDEO_FRAME[y];
-        fwrite(row, 1, row_bytes, fp);
-        fwrite(pad, 1, padding, fp);
+        latex_cache_put(latex, img);
     }
 
-    ROLLING_TIME[FRAME_COUNT % 128] = clock() - PREV_TIME;
-    PREV_TIME = clock();
-
-    fclose(fp);
+    remove("tmp.png");
 }
 
 // ------------------------------------------------------------
