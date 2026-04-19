@@ -2,6 +2,7 @@
 
 #include <omp.h>
 #include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,6 +53,9 @@ extern unsigned char** VIDEO_FRAME;
 extern float* MATRIX_STACK;
 extern int MATRIX_STACK_COUNT;
 extern int MATRIX_STACK_SIZE;
+extern clock_t START_TIME;
+extern clock_t ROLLING_TIME[128];
+extern clock_t PREV_TIME;
 
 #ifdef PEMBROKE_IMPLEMENTATION
 
@@ -67,6 +71,9 @@ int FRAME_COUNT = 0;
 float* MATRIX_STACK = NULL;
 int MATRIX_STACK_COUNT = 0;
 int MATRIX_STACK_SIZE = 0;
+clock_t START_TIME = 0;
+clock_t ROLLING_TIME[128] = { 0 };
+clock_t PREV_TIME = 0;
 
 // ------------------------------------------------------------
 // Make directory
@@ -294,6 +301,8 @@ static void video_init(int width, int height, int fps) {
         VIDEO_FRAME[i] = (unsigned char*)malloc(VIDEO_WIDTH * 3);
         if (!VIDEO_FRAME[i])exit(1);
     }
+    START_TIME = clock();
+    PREV_TIME = START_TIME;
 }
 
 // ------------------------------------------------------------
@@ -351,7 +360,22 @@ static void fill_frame(color c) {
 // Prints progress on video render
 // ------------------------------------------------------------
 static void progress(int video_frames) {
-    printf("\x1b[HFrames: %d / %d\nTime: %.2fsec / %.2fsec", FRAME_COUNT, video_frames, (float)FRAME_COUNT / (float)VIDEO_FPS, (float)video_frames / (float)VIDEO_FPS);
+    clock_t average_time = 0;
+    for (int i = 0; i < 128; i++) {
+        average_time += ROLLING_TIME[i];
+    }
+    average_time /= 128;
+    printf(
+        "\x1b[H"
+        "Frames: %d / %d\n"
+        "Time: %.2fsec / %.2fsec\n"
+        "Elapsed: %.2fsec\n"
+        "Time Left: %.2fsec",
+        FRAME_COUNT, video_frames,
+        (float)FRAME_COUNT / (float)VIDEO_FPS, (float)video_frames / (float)VIDEO_FPS,
+        (float)(clock() - START_TIME) / (CLOCKS_PER_SEC),
+        average_time / (float)CLOCKS_PER_SEC * (float)(video_frames - FRAME_COUNT)
+    );
 }
 
 // ------------------------------------------------------------
@@ -861,31 +885,48 @@ void blit_image(image* img, int x, int y, float target_width, float angle) {
     int sw = (int)target_width;
     int sh = (int)(img->h * ratio);
 
-    float rad = angle * PI / 180.0f;
+    float rad = -angle * PI / 180.0f;
     float cos_a = cosf(rad);
     float sin_a = sinf(rad);
 
+    float diag = sqrtf(sw*sw + sh*sh);
+    int half_diag = (int)(diag / 2.0f) + 1;
+
+    int min_tx = x - half_diag;
+    int max_tx = x + half_diag;
+    int min_ty = y - half_diag;
+    int max_ty = y + half_diag;
+
     #pragma omp parallel for
-    for (int py = 0; py < sh; py++) {
-        for (int px = 0; px < sw; px++) {
-            int src_x = (int)(px / ratio);
-            int src_y = (int)(py / ratio);
-            if (src_x >= img->w || src_y >= img->h) continue;
+    for (int ty = min_ty; ty <= max_ty; ty++) {
+        if (ty < 0 || ty >= VIDEO_HEIGHT) continue;
 
-            int idx = (src_y * img->w + src_x) * 4;
-            unsigned char r = img->pixels[idx];
-            unsigned char g = img->pixels[idx + 1];
-            unsigned char b = img->pixels[idx + 2];
-            unsigned char a = img->pixels[idx + 3];
+        for (int tx = min_tx; tx <= max_tx; tx++) {
+            if (tx < 0 || tx >= VIDEO_WIDTH) continue;
 
-            if (a > 0) {
-                int tx = px - sw / 2;
-                int ty = py - sh / 2;
-                int target_x = x + (int)(tx * cos_a - ty * sin_a);
-                int target_y = y + (int)(tx * sin_a + ty * cos_a);
+            int dx = tx - x;
+            int dy = ty - y;
 
-                if (target_x >= 0 && target_x < VIDEO_WIDTH && target_y >= 0 && target_y < VIDEO_HEIGHT) {
-                    set_pixel(target_x, target_y, (color){r, g, b});
+            float rx = dx * cos_a - dy * sin_a;
+            float ry = dx * sin_a + dy * cos_a;
+
+            float px = rx + sw / 2.0f;
+            float py = ry + sh / 2.0f;
+
+            if (px >= 0 && px < sw && py >= 0 && py < sh) {
+                int src_x = (int)(px / ratio);
+                int src_y = (int)(py / ratio);
+
+                if (src_x >= 0 && src_x < img->w && src_y >= 0 && src_y < img->h) {
+                    int idx = (src_y * img->w + src_x) * 4;
+                    unsigned char a = img->pixels[idx + 3];
+
+                    if (a > 0) {
+                        unsigned char r = img->pixels[idx];
+                        unsigned char g = img->pixels[idx + 1];
+                        unsigned char b = img->pixels[idx + 2];
+                        set_pixel(tx, ty, (color){r, g, b});
+                    }
                 }
             }
         }
@@ -898,38 +939,59 @@ void blit_image(image* img, int x, int y, float target_width, float angle) {
 void blit_latex_mask(image* img, int x, int y, float target_width, float angle, color c) {
     if (!img || !img->pixels || img->w == 0) return;
 
+    // 1. Calculate scaling and dimensions
     float ratio = target_width / (float)img->w;
     int sw = (int)target_width;
     int sh = (int)(img->h * ratio);
 
-    float rad = angle * PI / 180.0f;
+    // 2. Setup rotation (Inverse: rotate by -angle to sample)
+    float rad = -angle * PI / 180.0f;
     float cos_a = cosf(rad);
     float sin_a = sinf(rad);
 
-#pragma omp parallel for
-    for (int py = 0; py < sh; py++) {
-        for (int px = 0; px < sw; px++) {
-            
-            int src_x = (int)(px / ratio);
-            int src_y = (int)(py / ratio);
+    // 3. Define the bounding box on screen
+    // Using the diagonal ensures we cover the full rotation area
+    float diag = sqrtf((float)sw * sw + (float)sh * sh);
+    int half_diag = (int)(diag / 2.0f) + 1;
 
-            if (src_x >= img->w || src_y >= img->h) continue;
+    int min_tx = x - half_diag;
+    int max_tx = x + half_diag;
+    int min_ty = y - half_diag;
+    int max_ty = y + half_diag;
 
-            
-            int idx = (src_y * img->w + src_x) * 4;
-            unsigned char intensity = img->pixels[idx]; 
+    #pragma omp parallel for
+    for (int ty = min_ty; ty <= max_ty; ty++) {
+        if (ty < 0 || ty >= VIDEO_HEIGHT) continue;
 
-            int tx = px - sw / 2;
-            int ty = py - sh / 2;
-                
-            int target_x = x + (int)(tx * cos_a - ty * sin_a);
-            int target_y = y + (int)(tx * sin_a + ty * cos_a);
+        for (int tx = min_tx; tx <= max_tx; tx++) {
+            if (tx < 0 || tx >= VIDEO_WIDTH) continue;
 
-            set_pixel(target_x, target_y, (color){
-                (unsigned char)((c.r * intensity) / 255),
-                (unsigned char)((c.g * intensity) / 255),
-                (unsigned char)((c.b * intensity) / 255)
-            });
+            int dx = tx - x;
+            int dy = ty - y;
+
+            float rx = dx * cos_a - dy * sin_a;
+            float ry = dx * sin_a + dy * cos_a;
+
+            float px = rx + sw / 2.0f;
+            float py = ry + sh / 2.0f;
+
+            if (px >= 0 && px < sw && py >= 0 && py < sh) {
+                int src_x = (int)(px / ratio);
+                int src_y = (int)(py / ratio);
+
+                if (src_x >= 0 && src_x < img->w && src_y >= 0 && src_y < img->h) {
+                    int idx = (src_y * img->w + src_x) * 4;
+                    unsigned char intensity = img->pixels[idx]; 
+
+                    if (intensity > 0) {
+                        set_pixel(tx, ty, (color){
+                            (unsigned char)((c.r * intensity) / 255),
+                            (unsigned char)((c.g * intensity) / 255),
+                            (unsigned char)((c.b * intensity) / 255)
+                        });
+                    }
+                }
+            }
         }
     }
 }
@@ -1018,6 +1080,9 @@ static void save_frame(void) {
         fwrite(row, 1, row_bytes, fp);
         fwrite(pad, 1, padding, fp);
     }
+
+    ROLLING_TIME[FRAME_COUNT % 128] = clock() - PREV_TIME;
+    PREV_TIME = clock();
 
     fclose(fp);
 }
