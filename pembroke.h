@@ -35,20 +35,20 @@
 #define TABLE_SIZE 256
 
 typedef struct {
-    unsigned char *pixels;
+    unsigned char* pixels;
     int w, h;
 } image;
 
 typedef struct CacheNode {
-    char *key;
+    char* key;
     image img;
-    struct CacheNode *prev;
-    struct CacheNode *next;
+    struct CacheNode* prev;
+    struct CacheNode* next;
 } CacheNode;
 
 typedef struct {
-    char *key;
-    CacheNode *node;
+    char* key;
+    CacheNode* node;
 } HashEntry;
 
 typedef struct {
@@ -60,6 +60,11 @@ typedef void (*pixel_shader)(
     color* rgb,
     void* userdata
 );
+
+typedef struct {
+    int index;
+    color* data;
+} FrameJob;
 
 extern int VIDEO_WIDTH;
 extern int VIDEO_HEIGHT;
@@ -79,6 +84,7 @@ extern HashEntry TABLE[TABLE_SIZE];
 extern CacheNode* HEAD;
 extern CacheNode* TAIL;
 extern int CACHE_SIZE;
+extern FILE* FFMPEG_PIPE;
 
 #ifdef PEMBROKE_IMPLEMENTATION
 
@@ -101,11 +107,16 @@ HashEntry TABLE[TABLE_SIZE];
 CacheNode* HEAD = NULL;
 CacheNode* TAIL = NULL;
 int CACHE_SIZE = 0;
+FILE* FFMPEG_PIPE = NULL;
+
+#define scene(seconds, scene) do { \
+    for(int FRAMES = 0; FRAMES < seconds * VIDEO_FPS; FRAMES++) { scene } \
+} while(0)
 
 // ------------------------------------------------------------
 // Hash function
 // ------------------------------------------------------------
-static uint64_t hash_str(const char *s) {
+static uint64_t hash_str(const char* s) {
     uint64_t h = 1469598103934665603ULL;
     while (*s) {
         h ^= (unsigned char)*s++;
@@ -117,7 +128,7 @@ static uint64_t hash_str(const char *s) {
 // ------------------------------------------------------------
 // Hashtable lookup
 // ------------------------------------------------------------
-static CacheNode* cache_get_node(const char *key) {
+static CacheNode* cache_get_node(const char* key) {
     uint64_t h = hash_str(key);
     int idx = h & (TABLE_SIZE - 1);
 
@@ -133,7 +144,7 @@ static CacheNode* cache_get_node(const char *key) {
 // ------------------------------------------------------------
 // Hashtable insertion
 // ------------------------------------------------------------
-static void hash_insert(CacheNode *node) {
+static void hash_insert(CacheNode* node) {
     uint64_t h = hash_str(node->key);
     int idx = h & (TABLE_SIZE - 1);
 
@@ -148,7 +159,7 @@ static void hash_insert(CacheNode *node) {
 // ------------------------------------------------------------
 // Hashtable removal
 // ------------------------------------------------------------
-static void hash_remove(const char *key) {
+static void hash_remove(const char* key) {
     uint64_t h = hash_str(key);
     int idx = h & (TABLE_SIZE - 1);
 
@@ -165,7 +176,7 @@ static void hash_remove(const char *key) {
 // ------------------------------------------------------------
 // Hashtable helpers
 // ------------------------------------------------------------
-static void move_to_front(CacheNode *node) {
+static void move_to_front(CacheNode* node) {
     if (node == HEAD) return;
 
     if (node->prev) node->prev->next = node->next;
@@ -182,7 +193,7 @@ static void move_to_front(CacheNode *node) {
     if (!TAIL) TAIL = node;
 }
 
-static void insert_front(CacheNode *node) {
+static void insert_front(CacheNode* node) {
     node->prev = NULL;
     node->next = HEAD;
 
@@ -193,7 +204,7 @@ static void insert_front(CacheNode *node) {
 }
 
 static CacheNode* evict_lru() {
-    CacheNode *node = TAIL;
+    CacheNode* node = TAIL;
     if (!node) return NULL;
 
     if (node->prev)
@@ -208,8 +219,8 @@ static CacheNode* evict_lru() {
 // ------------------------------------------------------------
 // Return hashtable image pointer
 // ------------------------------------------------------------
-static image* latex_cache_get(const char *key) {
-    CacheNode *node = cache_get_node(key);
+static image* latex_cache_get(const char* key) {
+    CacheNode* node = cache_get_node(key);
     if (!node) return NULL;
 
     move_to_front(node);
@@ -219,8 +230,8 @@ static image* latex_cache_get(const char *key) {
 // ------------------------------------------------------------
 // Adds key image pair to hashtable
 // ------------------------------------------------------------
-static void latex_cache_put(const char *key, image img) {
-    CacheNode *node = malloc(sizeof(CacheNode));
+static void latex_cache_put(const char* key, image img) {
+    CacheNode* node = malloc(sizeof(CacheNode));
     node->key = strdup(key);
     node->img = img;
 
@@ -230,7 +241,7 @@ static void latex_cache_put(const char *key, image img) {
     CACHE_SIZE++;
 
     if (CACHE_SIZE > CACHE_CAPACITY) {
-        CacheNode *old = evict_lru();
+        CacheNode* old = evict_lru();
         hash_remove(old->key);
 
         free(old->img.pixels);
@@ -469,6 +480,16 @@ static void video_init(int width, int height, int fps) {
     }
     START_TIME = clock();
     PREV_TIME = START_TIME;
+
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd),
+        "ffmpeg -y -f rawvideo -pix_fmt rgb24 "
+        "-s %dx%d -r %d -i - "
+        "-c:v libx264 -preset fast -crf 18 output.mp4",
+        width, height, fps
+    );
+
+    FFMPEG_PIPE = popen(cmd, "w");
 }
 
 // ------------------------------------------------------------
@@ -1185,24 +1206,27 @@ static void write_latex(const char* latex, int x, int y, float scale, float angl
 }
 
 // ------------------------------------------------------------
+// Saves frame
+// ------------------------------------------------------------
+static void save_frame() {
+    for (int y = 0; y < VIDEO_HEIGHT; y++) {
+        fwrite(VIDEO_FRAME[y], sizeof(color), VIDEO_WIDTH, FFMPEG_PIPE);
+    }
+    FRAME_COUNT++;
+}
+
+// ------------------------------------------------------------
 // Saves video
 // ------------------------------------------------------------
-void video_end(void) {
+void video_end() {
     for (int i = 0; i < VIDEO_HEIGHT; i++) {
         free(VIDEO_FRAME[i]);
     }
     free(VIDEO_FRAME);
     if (MATRIX_STACK) free(MATRIX_STACK);
-
-    char cmd[512];
-    snprintf(cmd, sizeof(cmd),
-        "ffmpeg -y -framerate %d -i video/frame_%%05d.bmp "
-        "-s %dx%d -pix_fmt yuv420p render.mp4",
-        VIDEO_FPS, VIDEO_WIDTH, VIDEO_HEIGHT
-    );
-    system(cmd);
+    fflush(FFMPEG_PIPE);
+    pclose(FFMPEG_PIPE);
     remove_dir("video");
-    remove_dir("latex_cache");
 }
 
 #endif
