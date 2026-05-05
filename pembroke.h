@@ -1073,7 +1073,11 @@ static void graph_rpn(const char* rpn_src, int weight, color rgb) {
 // Loads image from file
 // ------------------------------------------------------------
 static image load_image(const char* filename) {
+<<<<<<< HEAD
     image img = {NULL, 0, 0};
+=======
+    image img = {0, 0, NULL};
+>>>>>>> 84be9ae (added more image support)
     int channels;
     const char* ext = strrchr(filename, '.');
 
@@ -1098,13 +1102,18 @@ static image load_image(const char* filename) {
 // ------------------------------------------------------------
 // Blits image struct onto frame
 // ------------------------------------------------------------
+<<<<<<< HEAD
 void blit_image(image* img, int x, int y, float target_width, float angle) {
+=======
+void blit_image(image* img, int x, int y, float target_width, float angle, color c) {
+>>>>>>> 84be9ae (added more image support)
     if (!img || !img->pixels || img->w == 0) return;
 
     float ratio = target_width / (float)img->w;
     int sw = (int)target_width;
     int sh = (int)(img->h * ratio);
 
+<<<<<<< HEAD
     float rad = -angle * PI / 180.0f;
     float cos_a = cosf(rad);
     float sin_a = sinf(rad);
@@ -1147,6 +1156,34 @@ void blit_image(image* img, int x, int y, float target_width, float angle) {
                         unsigned char b = img->pixels[idx + 2];
                         set_pixel(tx, ty, (color){r, g, b});
                     }
+=======
+    float rad = angle * PI / 180.0f;
+    float cos_a = cosf(rad);
+    float sin_a = sinf(rad);
+
+    #pragma omp parallel for
+    for (int py = 0; py < sh; py++) {
+        for (int px = 0; px < sw; px++) {
+            int src_x = (int)(px / ratio);
+            int src_y = (int)(py / ratio);
+
+            if (src_x >= img->w || src_y >= img->h) continue;
+
+            int idx = (src_y * img->w + src_x) * 4;
+            unsigned char intensity = img->pixels[idx];
+            unsigned char alpha = img->pixels[idx + 3];
+
+            if (intensity > 30 || alpha > 0) {
+                int tx = px - sw / 2;
+                int ty = py - sh / 2;
+                
+                int target_x = x + (int)(tx * cos_a - ty * sin_a);
+                int target_y = y + (int)(tx * sin_a + ty * cos_a);
+
+                // Bounds check for 4K frame
+                if (target_x >= 0 && target_x < VIDEO_WIDTH && target_y >= 0 && target_y < VIDEO_HEIGHT) {
+                    set_pixel(target_x, target_y, c);
+>>>>>>> 84be9ae (added more image support)
                 }
             }
         }
@@ -1224,11 +1261,21 @@ static void write_latex(const char* latex, int x, int y, float scale, float angl
 
     char cmd[512];
 
+<<<<<<< HEAD
     snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
     system(cmd);
 
     system("rsvg-convert -f png -h 500 -o tmp.png tmp.svg");
     remove("tmp.svg");
+=======
+    if (access(cache_path, F_OK) == -1) {
+        snprintf(cmd, sizeof(cmd), "node render.js \"%s\" > tmp.svg", latex);
+        system(cmd);
+        snprintf(cmd, sizeof(cmd), "rsvg-convert -f png -h 500 -o %s tmp.svg", cache_path);
+        system(cmd);
+        remove("tmp.svg");
+    }
+>>>>>>> 84be9ae (added more image support)
 
     image img;
     int channels;
