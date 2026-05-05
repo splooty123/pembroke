@@ -2,9 +2,10 @@
 Pembroke is a single file C library for creating and animating math videos.
 
 # Dependencies
-* Librsvg - for converting SVG to BMP
-* FFmpeg (included for Windows) - for encoding BMP frames into a video
-* stb_image.h (included) - for loading PNG images
+* Mathjax and Node.js - for LaTeX to SVG
+* Librsvg - for converting SVG to PNG
+* FFmpeg (included for Windows) - for piping frames into a video
+* stb_image.h (included) - for loading images
 
 # Usage
 The following is an minimal example of creating a video with Pembroke.
